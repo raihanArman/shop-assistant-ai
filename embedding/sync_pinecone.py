@@ -1,4 +1,3 @@
-import sys
 import os
 import time
 import pandas as pd
@@ -6,11 +5,7 @@ from dotenv import load_dotenv
 from pinecone import Pinecone, ServerlessSpec
 from tqdm.auto import tqdm
 from langchain_huggingface import HuggingFaceEmbeddings
-
-# Ensure project root is in sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from backend.db.mysql import get_db_connection
-
 
 load_dotenv()
 
@@ -26,17 +21,8 @@ spec = ServerlessSpec(
 index_name = 'shop-catalog'
 existing_indexes = [idx.name for idx in pc.list_indexes()]
 
-# Check if index already exists and verify dimension
-if index_name in existing_indexes:
-    idx_info = pc.describe_index(index_name)
-    if idx_info.dimension != 384:
-        print(f"Deleting index '{index_name}' (existing dimension {idx_info.dimension} != 384)...")
-        pc.delete_index(index_name)
-        time.sleep(5)
-        existing_indexes = [idx.name for idx in pc.list_indexes()]
-
+# Check if index already exists
 if index_name not in existing_indexes:
-    print(f"Creating index '{index_name}' with dimension 384...")
     pc.create_index(
         name=index_name,
         dimension=384,
@@ -47,7 +33,6 @@ if index_name not in existing_indexes:
     while not pc.describe_index(index_name).status['ready']:
         print(f"Waiting for index {index_name} to be ready...")
         time.sleep(5)
-
 
 # Connect to the index
 index = pc.Index(index_name)
