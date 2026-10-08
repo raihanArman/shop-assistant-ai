@@ -1,106 +1,116 @@
+import sys
 import os
 import time
-import mysql.connector
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from dotenv import load_dotenv 
-from pinecone import Pinecone, ServelessSpec
-from tqdm.auto import tqdm
 import pandas as pd
+from dotenv import load_dotenv 
+from pinecone import Pinecone, ServerlessSpec
+from tqdm.auto import tqdm
+from langchain_huggingface import HuggingFaceEmbeddings
+
+# Ensure project root is in sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from backend.db.mysql import get_db_connection
+
 
 load_dotenv()
 
-# pinecone configuration
-api_key=os.getenv("PINECONE_API_KEY")
-pc=Pinecone(api_key=api_key)
+# Pinecone configuration
+api_key = os.getenv("PINECONE_API_KEY")
+pc = Pinecone(api_key=api_key)
 
-spec=ServelessSpec(
-    cloud='aws',region='us-east-1'
+spec = ServerlessSpec(
+    cloud='aws',
+    region='us-east-1'
 )
 
-index='shop-catalog'
-existing_indexes=[index_info['name'] for index_info in pc.list_indexes()]
+index_name = 'shop-catalog'
+existing_indexes = [idx.name for idx in pc.list_indexes()]
 
-# check if index already exists
+# Check if index already exists and verify dimension
+if index_name in existing_indexes:
+    idx_info = pc.describe_index(index_name)
+    if idx_info.dimension != 384:
+        print(f"Deleting index '{index_name}' (existing dimension {idx_info.dimension} != 384)...")
+        pc.delete_index(index_name)
+        time.sleep(5)
+        existing_indexes = [idx.name for idx in pc.list_indexes()]
+
 if index_name not in existing_indexes:
+    print(f"Creating index '{index_name}' with dimension 384...")
     pc.create_index(
-        index_name=index,
-        dimension=768,
-        metric='dotproduct',
+        name=index_name,
+        dimension=384,
+        metric='cosine',
         spec=spec
     )
 
-    while not pc.describe_index(index).status['ready']:
-        print(f"Waiting for index {index} to be ready...")
+    while not pc.describe_index(index_name).status['ready']:
+        print(f"Waiting for index {index_name} to be ready...")
         time.sleep(5)
 
-# connect to the index
-indexes=pc.Index(index)
-time.sleep(1)
 
-# mysql config
-db_connection = get_db_connection()
+# Connect to the index
+index = pc.Index(index_name)
 
-cursor = db_connection.cursor()
+# Embedding model
+embed_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# Google Api key
-os.environ['GOOGLE_API_KEY'] = os.getenv("GOOGLE_API_KEY")
-embed_model=GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-def fetch_data():
-    query="SELECT* FROM products"
+def fetch_data(cursor):
+    query = "SELECT * FROM products"
     cursor.execute(query)
-    data=cursor.fetchall()
-    columns=[col[0] for col in cursor.description]
-    df=pd.DataFrame(data, columns=columns)
+    data = cursor.fetchall()
+    columns = [col[0] for col in cursor.description]
+    df = pd.DataFrame(data, columns=columns)
     return df
 
 def sync_with_pinecone(data):
-    batch_size=100
-    total_batches=(len(data)+batch_size-1) // batch_size
+    batch_size = 100
+    total_batches = (len(data) + batch_size - 1) // batch_size
 
     for i in tqdm(range(0, len(data), batch_size), desc="Processing Batches", unit='batch', total=total_batches):
-        i_end=min(len(data), i + batch_size)
-        batch=data.iloc[i:i_end]
+        i_end = min(len(data), i + batch_size)
+        batch = data.iloc[i:i_end]
 
-        # unique id
-        ids=[str(row['ProductID']) for _,row in batch.iterrows()]
+        # Unique IDs
+        ids = [str(row['ProductID']) for _, row in batch.iterrows()]
 
-        # combine text field for embedding
-        texts=[
+        # Combine text fields for embedding
+        texts = [
             f"{row['Description']} {row['ProductName']} {row['ProductBrand']} {row['Gender']} {row['Price']} {row['PrimaryColor']}"
-            for _,row in batch.iterrows()
+            for _, row in batch.iterrows()
         ]
 
-        # embed texts
-        embeds=embed_model.embed_documents(texts)
+        # Embed texts
+        embeds = embed_model.embed_documents(texts)
 
-        # get metadata
-        metadata=[
+        # Metadata
+        metadata = [
             {
-                'ProductName':row['ProductName'],
-                'ProductBrand':row['ProductBrand'],
-                'Gender':row['Gender'],
-                'Price':row['Price'],
-                'PrimaryColor':row['PrimaryColor'],
-                'Description':row['Description']
+                'ProductName': str(row['ProductName']) if pd.notna(row['ProductName']) else '',
+                'ProductBrand': str(row['ProductBrand']) if pd.notna(row['ProductBrand']) else '',
+                'Gender': str(row['Gender']) if pd.notna(row['Gender']) else '',
+                'Price': float(row['Price']) if pd.notna(row['Price']) else 0.0,
+                'PrimaryColor': str(row['PrimaryColor']) if pd.notna(row['PrimaryColor']) else '',
+                'Description': str(row['Description']) if pd.notna(row['Description']) else ''
             }
-            for _,row in batch.iterrows()
+            for _, row in batch.iterrows()
         ]
 
-        # upsert vectors
-        with tqdm(total=len(ids), desc="Upserting Vectors", unit='vector') as upsert_vector:
-            index.upsert(vectors=zip(ids,embeds,metadata))
-            upsert_vector.update(len(ids))
-
+        # Upsert vectors
+        vectors = list(zip(ids, embeds, metadata))
+        index.upsert(vectors=vectors)
 
 def main():
-    data=fetch_data()
-    sync_with_pinecone(data)
+    db_connection = get_db_connection()
+    cursor = db_connection.cursor()
+    try:
+        data = fetch_data(cursor)
+        print(f"Fetched {len(data)} products from MySQL.")
+        sync_with_pinecone(data)
+        print("Pinecone synchronization complete.")
+    finally:
+        cursor.close()
+        db_connection.close()
 
 if __name__ == '__main__':
-    main()                
-
-
-cursor.close()
-db_connection.close()
+    main()

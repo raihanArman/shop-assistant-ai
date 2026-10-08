@@ -1,21 +1,21 @@
 import os
 from dotenv import load_dotenv
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from pinecone import Pinecone, ServelessSpec
+from langchain_huggingface import HuggingFaceEmbeddings
+from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 
 load_dotenv()
 
-# init embedding model
-embedding_model=GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+# Init embedding model
+embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# init pinecone
-pc=Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index=pc.Index('shop-catalog')
+# Init Pinecone
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index('shop-catalog')
 
-# init vectorstore
-vectorstore=PineconeVectorStore(
+# Init vectorstore
+vectorstore = PineconeVectorStore(
     index=index,
     embedding=embedding_model,
-    text_key="description"
+    text_key="Description"
 )
