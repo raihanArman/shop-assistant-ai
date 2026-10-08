@@ -19,7 +19,9 @@ dependencies = [
     "langchain-pinecone>=0.2.0",
     "langchain-openai>=0.3.0",
     "langchain-groq>=0.2.0",
+    "streamlit>=1.40.0",
 ]
+
 
 
 

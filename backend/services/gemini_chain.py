@@ -43,9 +43,12 @@ def gen_response(query, history):
     llm = get_llm()
     history.append(f"User:{query}")
     context = get_relevant_context(query)
+    print(f"Context: {context}")
     prompt = f"{system_message}\n\n" + "\n".join(history) + f"\n\nContext:\n{context}\n\nAssistant:"
     
+    print(f"Prompt: {prompt}")
     response = llm.invoke(prompt)
+    print(f"Response: {response}")
     if hasattr(response, 'content'):
         response_text = str(response.content).strip()
     elif isinstance(response, str):
